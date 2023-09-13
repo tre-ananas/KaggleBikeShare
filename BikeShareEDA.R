@@ -89,6 +89,16 @@ count_by_humidity <- ggplot(data = bike,
   ylab("Bike Rental Count") +
   theme(plot.title = element_text(hjust = .5))
 
+# Scatterplot of Total Bike Rentals Count by Windsped
+count_by_windspeed <- ggplot(data = bike,
+       mapping = aes(x = windspeed, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Number of Total Bike Rentals by Windspeed") +
+  xlab("Windspeed") +
+  ylab("Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
+
 # Patchwork of Panel Plots
 corr_plot <- plot_correlation(bike[, c("count", "temp", "humidity", "holiday","workingday")], title = "Correlation Plot for Select Variables")
 plot_bar <- plot_bar(bike, title = "Frequency for Categorical/Factor Variables")
