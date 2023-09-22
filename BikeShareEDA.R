@@ -105,4 +105,58 @@ plot_bar <- plot_bar(bike, title = "Frequency for Categorical/Factor Variables")
 
 fourway_patch <- (corr_plot + plot_bar) / (count_by_temp + count_by_humidity)
 fourway_patch
-ggsave("BikeShareEDAFourwayPatch.png")
+# ggsave("BikeShareEDAFourwayPatch.png")
+
+# Log Transformation of Count ------------------------
+log_bike <- bike %>%
+  mutate(count = log(count))
+
+# Plot Histograms of Numeric Variables
+plot_histogram(log_bike)
+
+# Plot Scatterplot of logged_count ~ temp
+log_count_by_temp <- ggplot(data = log_bike,
+       mapping = aes(x = temp, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Logged Number of Total Bike Rentals by Temperature") +
+  xlab("Temperature") +
+  ylab("Logged Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
+
+# Plot Scatterplot of logged_count ~ atemp
+log_count_by_atemp <- ggplot(data = log_bike,
+       mapping = aes(x = atemp, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Logged Number of Total Bike Rentals by Felt Temperature") +
+  xlab("Felt Temperature") +
+  ylab("Logged Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
+
+# Plot Scatterplot of logged_count ~ humidity
+log_count_by_humidity <- ggplot(data = log_bike,
+       mapping = aes(x = humidity, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Logged Number of Total Bike Rentals by Humidity") +
+  xlab("Humidity") +
+  ylab("Logged Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
+
+# Plot Scatterplot of logged_count ~ windspeed
+log_count_by_windspeed <- ggplot(data = log_bike,
+       mapping = aes(x = windspeed, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Logged Number of Total Bike Rentals by Windspeed") +
+  xlab("Windspeed") +
+  ylab("Logged Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
+
+# Create a 4-Way Plot of Prominent Scatterplots
+log_fourway_patch <- (log_count_by_temp + log_count_by_atemp) / (log_count_by_humidity + log_count_by_windspeed)
+log_fourway_patch
+
+# Correlation Plot for log_bike
+plot_correlation(log_bike)

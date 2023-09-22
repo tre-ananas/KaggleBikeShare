@@ -105,3 +105,88 @@ pen_lin_bike_predictions <- bind_cols(bike_test$datetime,
 # Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
 # vroom_write(x=pen_lin_bike_predictions, file="bike_pen_lin_pred.csv", delim = ",")
 
+# In-Class Competition, 9/22/23 --------------------
+
+# Transform to sqrt(count)-------------------------------
+# We only do this on the training set because the test set doesn't have count,
+# hence we are working outside of the recipe because we only apply this to the training set
+sqrt_bike_train <- bike_train %>%
+  mutate(count = sqrt(count))
+
+# Feature Engineering ----------------------------------
+bike_recipe <- recipe(count ~ ., data = clean_train) %>%
+  step_mutate(weather = replace(weather, weather == 4, 3)) %>% # Replace the one instance of weather == 4 with weather == 3, which is similar
+  step_mutate(poly_humidity = -(humidity^2)) %>%
+  step_num2factor(weather, levels = c("clear", "mist", "light_precip", "heavy_precip")) %>% # Make weather into a factor
+  step_num2factor(season, levels = c("spring", "summer", "fall", "winter")) %>% # Make season into a factor
+  step_num2factor(holiday, levels = c("non_holiday", "holiday"), transform = function(x) x + 1) %>% # Make holiday into a factor; numbers must be nonzero, so add 1 to each first
+  step_num2factor(workingday, levels = c("non_workingday", "workingday"), transform = function(x) x + 1) %>% # Make workday into a factor; numbers must be nonzero, so add 1 to each first
+  step_date(datetime, features = "dow") %>% # add a column for day of week
+  step_time(datetime, features = "hour") %>% # add a column for hour
+  step_rm(datetime) %>% # Remove datetime bc we have broken it into two more useful features--dow and hour
+  step_rm(atemp) %>% # Remove atemp bc it is multicollinear w temp
+  step_dummy(all_nominal_predictors()) %>% # Make nominal predictors into dummy variables
+  step_zv(all_predictors()) %>% # Remove columns with zero variance
+  step_normalize(all_numeric_predictors()) %>% # Normalize numeric predictors to mean = 0, SD = 1 
+  step_rm(datetime_dow_Fri) # Fix rank-deficiency, which I believe comes from multicollinearity
+prepped_recipe <- prep(bike_recipe)
+structured_train <- bake(prepped_recipe, new_data = clean_train)
+
+# Print First 10 Rows ----------------------------------
+structured_train %>%
+  slice(1:10)
+
+# Linear Regression ------------------------------------
+bike_model <- linear_reg() %>% # Type of model
+  set_engine("lm")# Engine = What R function to use--linear model here
+
+bike_workflow <- workflow() %>% 
+  add_recipe(bike_recipe) %>%
+  add_model(bike_model) %>%
+  fit(data = sqrt_bike_train) # Fit the workflow
+
+# Look at fitted LM model
+extract_fit_engine(bike_workflow) %>%
+  tidy()
+extract_fit_engine(bike_workflow) %>%
+  summary
+
+bike_predictions <- bind_cols(bike_test$datetime, 
+                              predict(bike_workflow, new_data = bike_test)) %>% # Bind predictions to corresponding datetime
+  rename("datetime" = "...1", "count" = ".pred") %>% # Rename columns
+  mutate(count = (count ^ 2)) %>% # Back-transform the log to original scale
+  mutate(count = ifelse(count < 0, 0, count)) %>% # Make negative predictions into zeroes
+  mutate(datetime = as.character(format(datetime))) # Make datetime a character for vroom; otherwise there will be issues
+
+# Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
+vroom_write(x=bike_predictions, file="class_competition.csv", delim = ",")
+
+# Plot Scatterplot of sqrt_count ~ windspeed
+sqrt_count_by_windspeed <- ggplot(data = sqrt_bike_train,
+       mapping = aes(x = windspeed, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Sqrt of Number of Total Bike Rentals by Windspeed") +
+  xlab("Windspeed") +
+  ylab("Sqrt of Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
+
+# Plot Scatterplot of sqrt_count ~ humidity
+sqrt_count_by_humidity <- ggplot(data = sqrt_bike_train,
+       mapping = aes(x = humidity, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Sqrt of Number of Total Bike Rentals by Humidity") +
+  xlab("Humidity") +
+  ylab("Sqrt of Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
+
+# Plot Scatterplot of sqrt_count ~ temp
+sqrt_count_by_temp <- ggplot(data = sqrt_bike_train,
+       mapping = aes(x = temp, y = count)) +
+  geom_point(shape = 1, color = "skyblue") +
+  geom_smooth(se = FALSE, color = "navy") +
+  ggtitle("Sqrt of Number of Total Bike Rentals by Temperature") +
+  xlab("Temperature") +
+  ylab("Sqrt of Bike Rental Count") +
+  theme(plot.title = element_text(hjust = .5))
