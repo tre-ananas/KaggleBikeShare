@@ -105,6 +105,67 @@ pen_lin_bike_predictions <- bind_cols(bike_test$datetime,
 # Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
 # vroom_write(x=pen_lin_bike_predictions, file="bike_pen_lin_pred.csv", delim = ",")
 
+# Cross Validation ---------------------------------
+
+# Penalized Linear Regression ------------------------
+pen_lin_bike_model <- linear_reg(penalty = tune(), mixture = tune()) %>% # Set up model and tuning
+  set_engine("glmnet") # Function to fit R
+
+# Set Workflow
+pen_lin_bike_workflow <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(pen_lin_bike_model)
+
+# Grid of values to tune over
+tuning_grid <- grid_regular(penalty(), mixture(), levels = 15) # levels = L means L^2 total tuning possibilities
+
+# Split data for CV
+folds <- vfold_cv(bike_train, v = 15, repeats = 1)
+
+# Run the CV
+CV_results <- pen_lin_bike_workflow %>%
+  tune_grid(resamples = folds,
+            grid = tuning_grid,
+            metrics = metric_set(rmse, mae, rsq)) # or leave metrics NULL
+
+# Plot Results (example)
+collect_metrics(CV_results) %>% # Gathers metrics into DF
+  filter(.metric=="rmse") %>%
+  ggplot(data=., aes(x=penalty, y=mean, color=factor(mixture))) +
+  geom_line()
+
+# Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best("rmse")
+
+# Finalize the workflow and fit it
+final_wf <-
+  pen_lin_bike_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = log_bike_train)
+
+# Predict
+cv_pen_lin_bike_predictions <- bind_cols(bike_test$datetime, 
+                              predict(final_wf, new_data = bike_test)) %>% # Bind predictions to corresponding datetime
+  rename("datetime" = "...1", "count" = ".pred") %>% # Rename columns
+  mutate(count = exp(count)) %>% # Back-transform the log to original scale
+  mutate(count = ifelse(count < 0, 0, count)) %>% # Make negative predictions into zeroes
+  mutate(datetime = as.character(format(datetime))) # Make datetime a character for vroom; otherwise there will be issues
+
+# Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
+# vroom_write(x=cv_pen_lin_bike_predictions, file="cv_bike_pen_lin_pred.csv", delim = ",")
+
+
+
+
+
+#------------------------------------------------------
+#------------------------------------------------------
+#------------------------------------------------------
+#------------------------------------------------------
+
+# Separate Because the Recipe Changes
+
 # In-Class Competition, 9/22/23 --------------------
 
 # Transform to sqrt(count)-------------------------------
@@ -161,32 +222,4 @@ bike_predictions <- bind_cols(bike_test$datetime,
 # Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
 vroom_write(x=bike_predictions, file="class_competition.csv", delim = ",")
 
-# Plot Scatterplot of sqrt_count ~ windspeed
-sqrt_count_by_windspeed <- ggplot(data = sqrt_bike_train,
-       mapping = aes(x = windspeed, y = count)) +
-  geom_point(shape = 1, color = "skyblue") +
-  geom_smooth(se = FALSE, color = "navy") +
-  ggtitle("Sqrt of Number of Total Bike Rentals by Windspeed") +
-  xlab("Windspeed") +
-  ylab("Sqrt of Bike Rental Count") +
-  theme(plot.title = element_text(hjust = .5))
 
-# Plot Scatterplot of sqrt_count ~ humidity
-sqrt_count_by_humidity <- ggplot(data = sqrt_bike_train,
-       mapping = aes(x = humidity, y = count)) +
-  geom_point(shape = 1, color = "skyblue") +
-  geom_smooth(se = FALSE, color = "navy") +
-  ggtitle("Sqrt of Number of Total Bike Rentals by Humidity") +
-  xlab("Humidity") +
-  ylab("Sqrt of Bike Rental Count") +
-  theme(plot.title = element_text(hjust = .5))
-
-# Plot Scatterplot of sqrt_count ~ temp
-sqrt_count_by_temp <- ggplot(data = sqrt_bike_train,
-       mapping = aes(x = temp, y = count)) +
-  geom_point(shape = 1, color = "skyblue") +
-  geom_smooth(se = FALSE, color = "navy") +
-  ggtitle("Sqrt of Number of Total Bike Rentals by Temperature") +
-  xlab("Temperature") +
-  ylab("Sqrt of Bike Rental Count") +
-  theme(plot.title = element_text(hjust = .5))
