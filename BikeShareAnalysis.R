@@ -6,6 +6,7 @@ library(tidyverse)
 library(vroom)
 library(tidymodels)
 library(poissonreg)
+library(rpart)
 
 # Load Data --------------------------------------------
 bike_train <- vroom("train.csv")
@@ -155,10 +156,6 @@ cv_pen_lin_bike_predictions <- bind_cols(bike_test$datetime,
 # Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
 # vroom_write(x=cv_pen_lin_bike_predictions, file="cv_bike_pen_lin_pred.csv", delim = ",")
 
-
-
-
-
 #------------------------------------------------------
 #------------------------------------------------------
 #------------------------------------------------------
@@ -223,3 +220,65 @@ bike_predictions <- bind_cols(bike_test$datetime,
 vroom_write(x=bike_predictions, file="class_competition.csv", delim = ",")
 
 
+
+# Regression Tree --------------------------------
+
+# Feature Engineering ----------------------------------
+bike_recipe <- recipe(count ~ ., data = clean_train) %>%
+  step_mutate(weather = replace(weather, weather == 4, 3)) %>% # Replace the one instance of weather == 4 with weather == 3, which is similar
+  step_num2factor(weather, levels = c("clear", "mist", "light_precip", "heavy_precip")) %>% # Make weather into a factor
+  step_num2factor(season, levels = c("spring", "summer", "fall", "winter")) %>% # Make season into a factor
+  step_num2factor(holiday, levels = c("non_holiday", "holiday"), transform = function(x) x + 1) %>% # Make holiday into a factor; numbers must be nonzero, so add 1 to each first
+  step_num2factor(workingday, levels = c("non_workingday", "workingday"), transform = function(x) x + 1) %>% # Make workday into a factor; numbers must be nonzero, so add 1 to each first
+  step_date(datetime, features = "dow") %>% # add a column for day of week
+  step_time(datetime, features = "hour") %>% # add a column for hour
+  step_rm(datetime) %>% # Remove datetime bc we have broken it into two more useful features--dow and hour
+  step_rm(atemp) # Remove atemp bc it is multicollinear w temp
+prepped_recipe <- prep(bike_recipe)
+structured_train <- bake(prepped_recipe, new_data = clean_train)
+
+# Fit Model -------------------------------------
+reg_tree_model <- decision_tree(tree_depth = tune(), # tune() means the computer will figure out the values later
+                                cost_complexity = tune(),
+                                min_n = tune()) %>% # We just set up the type of model
+  set_engine("rpart") %>% # Engine = what R function to use
+  set_mode("regression")
+
+# Workflow w model and recipe -------------------
+reg_tree_workflow <- workflow() %>% # Set Workflow
+  add_recipe(bike_recipe) %>%
+  add_model(reg_tree_model)
+
+tuning_grid <- grid_regular(tree_depth(), # Grid of values to tune over
+                            cost_complexity(), 
+                            min_n(),
+                            levels = 5) # levels = L means L^2 total tuning possibilities
+
+folds <- vfold_cv(bike_train, # Split data for CV
+                  v = 5, # 5 folds
+                  repeats = 1)
+
+CV_results <- reg_tree_workflow %>% # Run the CV
+  tune_grid(resamples = folds,
+            grid = tuning_grid,
+            metrics = metric_set(rmse, mae, rsq)) # or leave metrics NULL
+
+# Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best("rmse")
+
+# Finalize the workflow and fit it
+final_wf <-
+  reg_tree_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = log_bike_train)
+
+# Predict
+reg_tree_bike_predictions <- bind_cols(bike_test$datetime, 
+                              predict(final_wf, new_data = bike_test)) %>% # Bind predictions to corresponding datetime
+  rename("datetime" = "...1", "count" = ".pred") %>% # Rename columns
+  mutate(count = exp(count)) %>% # Back-transform the log to original scale
+  mutate(datetime = as.character(format(datetime))) # Make datetime a character for vroom; otherwise there will be issues
+
+# Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
+vroom_write(x=reg_tree_bike_predictions, file="reg_tree_bike_predictions.csv", delim = ",")
