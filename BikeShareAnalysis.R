@@ -281,4 +281,72 @@ reg_tree_bike_predictions <- bind_cols(bike_test$datetime,
   mutate(datetime = as.character(format(datetime))) # Make datetime a character for vroom; otherwise there will be issues
 
 # Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
-vroom_write(x=reg_tree_bike_predictions, file="reg_tree_bike_predictions.csv", delim = ",")
+# vroom_write(x=reg_tree_bike_predictions, file="reg_tree_bike_predictions.csv", delim = ",")
+
+
+
+
+
+
+
+# Random Forest --------------------------------
+
+# Feature Engineering ----------------------------------
+bike_recipe <- recipe(count ~ ., data = clean_train) %>%
+  step_mutate(weather = replace(weather, weather == 4, 3)) %>% # Replace the one instance of weather == 4 with weather == 3, which is similar
+  step_num2factor(weather, levels = c("clear", "mist", "light_precip", "heavy_precip")) %>% # Make weather into a factor
+  step_num2factor(season, levels = c("spring", "summer", "fall", "winter")) %>% # Make season into a factor
+  step_num2factor(holiday, levels = c("non_holiday", "holiday"), transform = function(x) x + 1) %>% # Make holiday into a factor; numbers must be nonzero, so add 1 to each first
+  step_num2factor(workingday, levels = c("non_workingday", "workingday"), transform = function(x) x + 1) %>% # Make workday into a factor; numbers must be nonzero, so add 1 to each first
+  step_date(datetime, features = "dow") %>% # add a column for day of week
+  step_time(datetime, features = "hour") %>% # add a column for hour
+  step_rm(datetime) %>% # Remove datetime bc we have broken it into two more useful features--dow and hour
+  step_rm(atemp) # Remove atemp bc it is multicollinear w temp
+prepped_recipe <- prep(bike_recipe)
+structured_train <- bake(prepped_recipe, new_data = clean_train)
+
+# Fit Model -------------------------------------
+rand_for_model <- rand_forest(mtry = tune(),
+                              min_n = tune(),
+                              trees = 500) %>% # Type of Model
+  set_engine("ranger") %>% # What R function to use
+  set_mode("regression")
+
+
+# Workflow w model and recipe -------------------
+rand_for_workflow <- workflow() %>% # Set Workflow
+  add_recipe(bike_recipe) %>%
+  add_model(rand_for_model)
+
+tuning_grid <- grid_regular(mtry(range = c(1, 9)), # Grid of values to tune over
+                            min_n(),
+                            levels = 2) # levels = L means L^2 total tuning possibilities
+
+folds <- vfold_cv(bike_train, # Split data for CV
+                  v = 2, # 5 folds
+                  repeats = 1)
+
+CV_results <- rand_for_workflow %>% # Run the CV
+  tune_grid(resamples = folds,
+            grid = tuning_grid,
+            metrics = metric_set(rmse, mae, rsq)) # or leave metrics NULL
+
+# Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best("rmse")
+
+# Finalize the workflow and fit it
+final_wf <-
+  rand_for_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = log_bike_train)
+
+# Predict
+rand_for_bike_predictions <- bind_cols(bike_test$datetime, 
+                              predict(final_wf, new_data = bike_test)) %>% # Bind predictions to corresponding datetime
+  rename("datetime" = "...1", "count" = ".pred") %>% # Rename columns
+  mutate(count = exp(count)) %>% # Back-transform the log to original scale
+  mutate(datetime = as.character(format(datetime))) # Make datetime a character for vroom; otherwise there will be issues
+
+# Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
+vroom_write(x=rand_for_bike_predictions, file="rand_for_bike_predictions.csv", delim = ",")
