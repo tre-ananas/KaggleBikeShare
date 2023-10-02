@@ -1,12 +1,17 @@
 # Bike Share Data Analysis
 # 13 September 2023
 
+#-------------------------------------------------------------------------------------------
+# SETUP - ALWAYS RUN THIS SECTION
+#-------------------------------------------------------------------------------------------
+
 # Load Libraries ---------------------------------------
 library(tidyverse)
 library(vroom)
 library(tidymodels)
 library(poissonreg)
 library(rpart)
+library(stacks)
 
 # Load Data --------------------------------------------
 bike_train <- vroom("train.csv")
@@ -23,6 +28,40 @@ clean_train <- bike_train %>%
 # hence we are working outside of the recipe because we only apply this to the training set
 log_bike_train <- bike_train %>%
   mutate(count = log(count))
+
+
+
+
+
+# Data Cleaning and Transformation
+bike_train <- bike_train %>%
+  select(-c(registered, casual)) %>% # Remove casual and registered because they are direct components of count (count = casual + registered)
+  mutate(count = log(count)) # Transform count into log(count)
+
+# Note on removing registered and casual from bike_train:
+# Kept this out of the recipe because I only want to apply it to train.csv; test.csv doesn't even have registered and casual.
+# Anything I want to do to both datasets should happen in the recipe.
+
+# Note on transforming count to log(count):
+# We only do this on the training set because the test set doesn't have count,
+# hence we are working outside of the recipe because we only apply this to the training set
+
+#-------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ----------------------------------------------------
+
 
 # Feature Engineering ----------------------------------
 bike_recipe <- recipe(count ~ ., data = clean_train) %>%
@@ -349,4 +388,124 @@ rand_for_bike_predictions <- bind_cols(bike_test$datetime,
   mutate(datetime = as.character(format(datetime))) # Make datetime a character for vroom; otherwise there will be issues
 
 # Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
-vroom_write(x=rand_for_bike_predictions, file="rand_for_bike_predictions.csv", delim = ",")
+# vroom_write(x=rand_for_bike_predictions, file="rand_for_bike_predictions.csv", delim = ",")
+
+
+
+
+
+
+
+#-------------------------------------------------------------------------------------------
+# MODEL STACKING
+#-------------------------------------------------------------------------------------------
+
+# Feature Engineering  ----------------------------------
+bike_recipe <- recipe(count ~ ., data = bike_train) %>%
+  step_mutate(weather = replace(weather, weather == 4, 3)) %>% # Replace the one instance of weather == 4 with weather == 3, which is similar
+  step_num2factor(weather, levels = c("clear", "mist", "light_precip")) %>% # Make weather into a factor
+  step_num2factor(season, levels = c("spring", "summer", "fall", "winter")) %>% # Make season into a factor
+  step_num2factor(holiday, levels = c("non_holiday", "holiday"), transform = function(x) x + 1) %>% # Make holiday into a factor; numbers must be nonzero, so add 1 to each first
+  step_num2factor(workingday, levels = c("non_workingday", "workingday"), transform = function(x) x + 1) %>% # Make workday into a factor; numbers must be nonzero, so add 1 to each first
+  step_date(datetime, features = "dow") %>% # add a column for day of week
+  step_time(datetime, features = "hour") %>% # add a column for hour
+  step_rm(datetime) %>% # Remove datetime bc we have broken it into two more useful features--dow and hour
+  step_rm(atemp) %>% # Remove atemp bc it is multicollinear w temp
+  step_dummy(all_nominal_predictors()) %>% # Make nominal predictors into dummy variables
+  step_zv() %>% # Remove columns with zero variance
+  step_normalize(all_numeric_predictors()) # Normalize numeric predictors to mean = 0, SD = 1 
+prepped_recipe <- prep(bike_recipe)
+baked_bike_train <- bake(prepped_recipe, new_data = bike_train)
+
+baked_bike_train %>% 
+  slice(1:10) # Print First 10 Rows
+
+# Cross Validation ------------------------
+folds <- vfold_cv(bike_train, 
+                  v = 5, 
+                  repeats = 1) # Split data for CV
+
+untuned_model <- control_stack_grid() # Control grid for tuning over a grid
+tuned_model <- control_stack_resamples() # Control grid for models we aren't tuning
+
+# Penalized Linear Regression Model -----------------------
+pen_lin_reg <- linear_reg(penalty = tune(),
+                          mixture = tune()) %>% # Set model and tuning
+  set_engine("glmnet") # Function to fit R
+  
+pen_lin_reg_wf <- workflow() %>% # Set workflow
+  add_recipe(bike_recipe) %>%
+  add_model(pen_lin_reg)
+
+pen_lin_reg_tg <- grid_regular(penalty(), # grid of values to tune over
+                               mixture(),
+                               levels = 5) # 25 tuning possibilities
+
+pen_lin_reg_fit <- pen_lin_reg_wf %>% # Tune the model
+  tune_grid(resamples = folds,
+            grid = pen_lin_reg_tg,
+            metrics = metric_set(rmse, mae),
+            control = untuned_model)
+
+# Regression Tree -------------------------
+reg_tree <- decision_tree(tree_depth = tune(), #tune() means the computer will figure out the values later
+                                cost_complexity = tune(),
+                                min_n = tune()) %>% # We just set up the type of model
+  set_engine("rpart") %>% # Engine = what R function to use
+  set_mode("regression")
+
+reg_tree_wf <- workflow() %>% # Set Workflow
+  add_recipe(bike_recipe) %>%
+  add_model(reg_tree)
+
+reg_tree_tg <- grid_regular(tree_depth(), # Grid of values to tune over
+                            cost_complexity(), 
+                            min_n(),
+                            levels = 5) # levels = L means L^2 total tuning possibilities
+
+reg_tree_fit <- reg_tree_wf  %>% # Run the CV
+  tune_grid(resamples = folds,
+            grid = reg_tree_tg,
+            metrics = metric_set(rmse, mae, rsq), # or leave metrics NULL
+            control = untuned_model)
+
+# Random Forest -----------------------------
+rand_for <- rand_forest(mtry = tune(),
+                              min_n = tune(),
+                              trees = 500) %>% # Type of Model
+  set_engine("ranger") %>% # What R function to use
+  set_mode("regression")
+
+rand_for_wf <- workflow() %>% # Set Workflow
+  add_recipe(bike_recipe) %>%
+  add_model(rand_for)
+
+rand_for_tg <- grid_regular(mtry(range = c(1, 9)), # Grid of values to tune over
+                            min_n(),
+                            levels = 2) # levels = L means L^2 total tuning possibilities
+
+rand_for_fit <- rand_for_wf %>% # Run the CV
+  tune_grid(resamples = folds,
+            grid = rand_for_tg,
+            metrics = metric_set(rmse, mae, rsq),
+            control = untuned_model) # or leave metrics NULL
+
+# Stacked Model -------------------------------------
+bike_stack <- stacks() %>% # Specify the models to include
+  add_candidates(pen_lin_reg_fit) %>%
+  add_candidates(reg_tree_fit) %>%
+  add_candidates(rand_for_fit)
+
+stacked_model <- bike_stack %>% # Fit the stacked model
+  blend_predictions() %>% # LASSO penalized regression meta-learner
+  fit_members() # Fit the members to the dataset
+
+stacked_predictions <- bind_cols(bike_test$datetime,# Make predictions using stacked_model
+                              predict(stacked_model, new_data = bike_test)) %>% # Bind predictions to corresponding datetime
+  rename("datetime" = "...1", "count" = ".pred") %>% # Rename columns
+  mutate(count = exp(count)) %>% # Back-transform the log to original scale
+  mutate(datetime = as.character(format(datetime))) # Make datetime a character for vroom; otherwise there will be issues
+
+# Comment this out because it writes our predictions to an Excel sheet and I don't want that to happen every time I run the script
+# vroom_write(x=stacked_predictions, file="stacked_predictions.csv", delim = ",")
+#-------------------------------------------------------------------------------------------
